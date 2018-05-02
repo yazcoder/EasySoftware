@@ -1,0 +1,201 @@
+#author:liangyazi
+#version:V0.0.0.2
+#版本说明：增加了IP地址和URL自动判断功能；修复了一些bug
+import requests
+import smtplib
+import time
+from email.mime.text import MIMEText
+from email.header import Header
+import urllib3
+import subprocess
+import os
+urllib3.disable_warnings()
+global error_code,error_device,IFPRINT
+error_code = 0
+error_device = None
+IFPRINT = True
+
+def get_error_info(err_code,error_dev):
+    localtime = time.localtime()
+    t = time.strftime('%Y-%m-%d-%H-%M-%S',localtime)
+    tt = t.split('-')
+    error_time = '%s年%s月%s日，%s点%s分%s秒' %(tt[0],tt[1],tt[2],tt[3],tt[4],tt[5])
+    err_list = [error_device,err_code,error_time]
+    return err_list
+    
+def send_notice():
+    global error_code,error_device,IFPRINT
+    IFPRINT = False
+    error_info = get_error_info(error_code,error_device)
+    mail_host = 'test'
+    mail_user = 'test@abc.com'
+    mail_pass = '123456'
+    sender = 'admin@test.com'
+    recvmail = str(init_software(IFPRINT))
+    receivers = ['%s'% recvmail]
+    if error_code == 100:
+        error = '故障码100：与设备的网络连接发生中断！'
+    elif error_code == 200:
+        error = '故障码200：与设备的WEB连接状态发生异常！'
+    elif error_code == 300:
+        error = '故障码300：设备的WEB服务发生异常！'
+    send_mesg = '''
+                    设备出现断网或重启现象，请尽快排除故障！
+                    故障信息：%s
+                    设备地址：%s
+                    故障发生时间：%s
+                '''%(error,error_device,error_info[2])
+    message = MIMEText(send_mesg, 'plain', 'utf-8')
+    message['From'] = 'firewall<test@abc.com>'
+    message['To'] = 'test<%s>'% recvmail
+    subject = '设备告警信息'
+    message['Subject'] = Header(subject, 'utf-8')
+    try:
+        smtpObj = smtplib.SMTP() 
+        smtpObj.connect(mail_host, 25)    
+        smtpObj.login(mail_user,mail_pass)
+        smtpObj.sendmail(sender, receivers, message.as_string())
+        print ("邮件发送成功")
+    except:
+        print ("Error: 无法发送邮件")
+
+def get_states():
+    global error_code,error_device
+    while True:
+        try:
+            ip = input('请输入需要监控的IP地址或链接：')
+        except KeyboardInterrupt:
+            print('程序退出！')
+            time.sleep(2)
+            exit(2)
+        ip_list = ip.split('.')
+        if len(ip_list) != 4 and len(ip_list) !=3:
+            print('请正确输入地址！')
+            continue
+        try:
+            if not (ip.startswith('http://') or ip.startswith('https://')):
+                for a in ip_list:
+                    if not a.isdigit():
+                        print('输入地址为非IP地址！若为网址请以http://或https://开头！')
+                        raise Exception
+                    else:
+                         ip_attr_pureip = True
+            else:
+                ip_attr_pureip = False
+        except:
+            continue
+        if ip.endswith('/'):
+            print('请勿在结尾处输入"/"符号！')
+            continue            
+        ip_list2 = ip.split(':')
+        if not ip_attr_pureip:
+            ipaddr = ip_list2[1][2:]
+        else:
+            ipaddr = ip
+        error_device = ip
+        print('程序正在执行...')
+        try:
+            a = subprocess.getstatusoutput("ping %s -n 3" %ipaddr)
+            if int(a[0]) == 0:
+                print('网络连通性通过√')
+                print('正在执行下一步探测...')
+            else:
+                print('请确认网络连通后再次执行！\n')
+                continue
+            print('※启动监控...')
+            while True:
+                if not ip_attr_pureip:
+                    try:
+                        code = subprocess.getstatusoutput("ping %s -n 2" %ipaddr)
+                        if int(code[0]) == 0:
+                            print('网络连通性通过√')
+                            print('正在执行web状态探测...')
+                        else:
+                            error_code = 100
+                            get_error_info(error_code,error_device)
+                            print('网络连通失败×')
+                            print('设备出现故障-->发送邮件中...')
+                            send_notice()
+                            time.sleep(300)
+                            continue
+                        r = requests.get(ip,allow_redirects = True,verify=False)
+                    except KeyboardInterrupt:
+                        print('程序退出！')
+                        time.sleep(2)
+                        exit(2)
+                    except Exception:
+                        error_code = 200
+                        get_error_info(error_code,error_device)
+                        print('设备WEB状态异常×')
+                        print('设备出现故障-->发送邮件中...')
+                        send_notice()
+                        time.sleep(300)
+                        continue
+                    if int(r.status_code) != 200 and int(r.status_code) != 400 :
+                        error_code = 300
+                        get_error_info(error_code,error_device)
+                        print('状态返回码：',+ str(r.status_code) + '×')
+                        print('设备WEB服务异常×')
+                        print('设备出现故障-->发送邮件中...')
+                        send_notice()
+                        time.sleep(300)
+                    else:
+                        print('状态返回码：'+ str(r.status_code) + '√')
+                        print('设备运行中...')
+                        time.sleep(10)
+                elif ip_attr_pureip:
+                    print('输入地址为纯IP地址，开始进行网络探测...')
+                    while True:
+                        print('正在执行网络连接性检测...')
+                        code = subprocess.getstatusoutput("ping %s -n 3" %ipaddr)
+                        if int(code[0]) == 0:
+                            print('与设备的网络连通正常√')
+                        else:
+                            error_code = 100
+                            get_error_info(error_code,error_device)
+                            print('设备出现故障-->发送邮件中...')
+                            send_notice()
+                            time.sleep(300)
+        except Exception:
+            print('出现未知错误...')
+        except KeyboardInterrupt:
+            print('程序退出！')
+            time.sleep(2)
+            exit(2)
+
+def init_software(IFPRINT):
+    try:
+        if IFPRINT:
+            print('*'*10 + '欢迎使用EasySee设备状态监控程序-V0.0.0.2' + '*'*10)
+            print('')
+        if not os.path.exists(r'd:\EasySee\mail.cfg'):
+            if not os.path.exists(r'd:\EasySee'):
+                os.mkdir(r'd:\EasySee')
+            while True:
+                print('欢迎首次使用EasySee设备状态监控程序，请先设置相关信息：')
+                recv_mail = input('请设置接收告警信息通知的邮箱地址：')
+                if '@' not in recv_mail and not recv_mail.endswith('.com'):
+                    print('请输入正确的邮箱地址！')
+                    continue
+                f = open(r'd:\EasySee\mail.cfg','x')
+                f.write(recv_mail)
+                f.close()
+                break
+            return recv_mail
+        else:
+            f = open(r'd:\EasySee\mail.cfg','r')
+            mail_addr = f.readline()
+            f.close()
+            print('告警接收邮箱：%s' %mail_addr)
+        return mail_addr
+    except KeyboardInterrupt:
+        print('程序退出！')
+        time.sleep(2)
+        exit(2)        
+def main_process():
+    global IFPRINT
+    IFPRINT = True
+    init_software(IFPRINT)
+    get_states()
+
+main_process()
